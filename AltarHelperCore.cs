@@ -1,4 +1,7 @@
-﻿using ExileCore;
+﻿using AltarHelper.Models;
+using ExileCore;
+using ExileCore.PoEMemory;
+using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.Elements;
 using ExileCore.Shared.Cache;
 using SharpDX;
@@ -13,17 +16,16 @@ namespace AltarHelper
     public class AltarHelperCore : BaseSettingsPlugin<Settings>
     {
         private const string FILTER_FILE = "Filter.txt";
-        public List<FilterEntry> FilterList = new();
-        public List<Tuple<RectangleF, Color, int>> RectangleDrawingList = new();
-        public List<Tuple<string, Vector2, Color>> TextDrawingList = new();
-        private FrameCache<List<LabelOnGround>> LabelCache { get; set; }
+        private List<FilterEntry> FilterList = new();
+        private TimeCache<List<LabelOnGround>> LabelCache { get; set; }
+        private Dictionary<uint, Altar> CalculatedAltarDict { get; set; } = new Dictionary<uint, Altar>();
 
         public override bool Initialise()
         {
             Name = "AltarHelper";
             Settings.AltarSettings.RefreshFile.OnPressed += ReadFilterFile;
             ReadFilterFile();
-            LabelCache = new FrameCache<List<LabelOnGround>>(UpdateAltarLabelList);
+            LabelCache = new TimeCache<List<LabelOnGround>>(UpdateAltarLabelList, 500);
             return true;
         }
         private List<LabelOnGround> UpdateAltarLabelList() => GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Count == 0 ? new List<LabelOnGround>() :
@@ -31,6 +33,7 @@ namespace AltarHelper
                 Where(x =>
                     x.ItemOnGround.Metadata == "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar" ||
                     x.ItemOnGround.Metadata == "Metadata/MiscellaneousObjects/PrimordialBosses/CleansingFireAltar").ToList();
+        #region FileHandling
         private void ReadFilterFile()
         {
             var path = $"{DirectoryFullName}\\{FILTER_FILE}";
@@ -48,10 +51,10 @@ namespace AltarHelper
             if (File.Exists(path)) return;
             using (var streamWriter = new StreamWriter(path, true))
             {
-                streamWriter.WriteLine("//Name|Weight|Choice");
+                streamWriter.WriteLine("//Name|Weight|Choice|Sound(optional)");
                 streamWriter.WriteLine("#Good");
                 //  streamWriter.WriteLine("");
-                streamWriter.WriteLine("Drops (1–3) additional Scarab|10|Boss");
+                streamWriter.WriteLine("Final Boss drops (2–4) additional Divine Orbs|200000|Boss|inception");
                 streamWriter.WriteLine("#Bad");
                 streamWriter.WriteLine("");
                 streamWriter.Close();
@@ -93,6 +96,7 @@ namespace AltarHelper
                     Target = splitLine.Length <= 2 ?
                         AffectedTarget.Any :
                         AltarModsConstants.FilterTargetDict[splitLine[2]],
+                    //Sound = splitLine[3],
                 };
                 FilterList.Add(filter);
             }
@@ -100,21 +104,47 @@ namespace AltarHelper
         }
         public override void Render()
         {
-            foreach (var frame in RectangleDrawingList)
+            foreach (var entry in CalculatedAltarDict)
             {
-                Graphics.DrawFrame(frame.Item1, frame.Item2, frame.Item3);
+                var altar = entry.Value;
+                if (altar.EntityReference == null) continue;
+
+                var topRectangleDrawing = altar.TopRectangleDrawing;
+                if (topRectangleDrawing != null)
+                {
+                    RectangleF? rectangle = topRectangleDrawing.TryGetRectangleFfromLabel();
+                    if (rectangle != null)
+                    {
+                        Graphics.DrawFrame((RectangleF)rectangle, topRectangleDrawing.Color, topRectangleDrawing.FrameThickness);
+                    }
+                }
+                var bottomRectangleDrawing = altar.BottomRectangleDrawing;
+                if (bottomRectangleDrawing != null)
+                {
+                    RectangleF? rectangle = bottomRectangleDrawing.TryGetRectangleFfromLabel();
+                    if (rectangle != null)
+                    {
+                        Graphics.DrawFrame((RectangleF)rectangle, bottomRectangleDrawing.Color, bottomRectangleDrawing.FrameThickness);
+                    }
+                }
+
+                //var topTextDrawing = altar.TopTextDrawing;
+                //if (topTextDrawing != null)
+                //{
+                //    Graphics.DrawText(topTextDrawing.text, topTextDrawing.vector, topTextDrawing.color);
+                //}
+                //var bottomTextDrawing = altar.BottomTextDrawing;
+                //if (bottomTextDrawing != null)
+                //{
+                //    Graphics.DrawText(bottomTextDrawing.text, bottomTextDrawing.vector, bottomTextDrawing.color);
+                //}
             }
-            foreach (var text in TextDrawingList)
-            {
-                Graphics.DrawText(text.Item1, text.Item2, text.Item3);
-            }
+
         }
 
+        #endregion
         public override Job Tick()
         {
-            RectangleDrawingList.Clear();
-            TextDrawingList.Clear();
-
             //Mode switching
             if (Settings.AltarSettings.HotkeyMode.PressedOnce())
             {
@@ -123,104 +153,200 @@ namespace AltarHelper
                 switch (Settings.AltarSettings.SwitchMode.Value)
                 {
                     case 1:
-                        DebugWindow.LogMsg("AltarHelper: Changed to Any Choice");
+                        DebugWindow.LogMsg("AltarHelper: Changed to Filter Mode");
                         break;
                     case 2:
-                        DebugWindow.LogMsg("AltarHelper: Changed to only Minions and Player Choices");
+                        DebugWindow.LogMsg("AltarHelper: Changed to only Minions and Player Options");
                         break;
                     case 3:
-                        DebugWindow.LogMsg("AltarHelper: Changed to only bosses and Players Choices");
+                        DebugWindow.LogMsg("AltarHelper: Changed to only Bosses and Players Options");
+                        break;
+                }
+            }
+            CleanCalculatedAltarsDictionary();
+            if (!CanRun()) return null;
+            CalculateAltars();
+            return null;
+        }
+        public override void AreaChange(AreaInstance area)
+        {
+            CalculatedAltarDict.Clear();
+        }
+
+        private void CalculateAltars()
+        {
+            var AltarLabels = LabelCache.Value;
+            foreach (var altarlabel in AltarLabels)
+            {
+
+                Element topOptionLabel = altarlabel.Label?.GetChildAtIndex(0);
+                Element bottomOptionLabel = altarlabel.Label?.GetChildAtIndex(1);
+
+                //update some values but skip Weightcalculation
+                if (CalculatedAltarDict.ContainsKey(altarlabel.ItemOnGround.Id))
+                {
+                    //Update the dictionary in case we moved out of the network bubble
+                    CalculatedAltarDict.TryGetValue(altarlabel.ItemOnGround.Id, out Altar existingAltar);
+                    if (existingAltar != null)
+                    {
+                        existingAltar.EntityReference = altarlabel.ItemOnGround;
+                        existingAltar.TopOptionLabel = topOptionLabel;
+                        existingAltar.BottomOptionLabel = bottomOptionLabel;
+                        continue;
+                    }
+                }
+
+                string? topOptionText = topOptionLabel?.GetChildAtIndex(1)?.GetText(512);
+                string? bottomOptionText = bottomOptionLabel?.GetChildAtIndex(1)?.GetText(512);
+                #region debug
+                if (Settings.DebugSettings.DebugRawText == true)
+                {
+                    DebugWindow.LogError($"AltarBottom Length 512 : {bottomOptionText}");
+                    DebugWindow.LogError($"AltarTop Length 512 : {topOptionText}");
+                }
+                #endregion
+                if (topOptionText == null || bottomOptionText == null) continue;
+
+                Altar altar = new(GetSelectionData(topOptionText), GetSelectionData(bottomOptionText), altarlabel.ItemOnGround, topOptionLabel, bottomOptionLabel);
+                SetAltarDrawings(altar);
+                CalculatedAltarDict.Add(altarlabel.ItemOnGround.Id, altar);
+
+
+            }
+        }
+        private void SetAltarDrawings(Altar altar)
+        {
+            if (altar.TopSelection.UpsideWeight == 0 &&
+                    altar.BottomSelection.UpsideWeight == 0 &&
+                    altar.TopSelection.DownsideWeight == 0 &&
+                    altar.BottomSelection.DownsideWeight == 0) return;
+
+            int topOptionWeight = 0;
+            int bottomOptionWeight = 0;
+            switch ((SwitchModeEnum)Settings.AltarSettings.SwitchMode.Value)
+            {
+                case SwitchModeEnum.Filter:
+                    topOptionWeight += altar.TopSelection.UpsideWeight - altar.TopSelection.DownsideWeight;
+                    bottomOptionWeight += altar.BottomSelection.UpsideWeight - altar.BottomSelection.DownsideWeight;
+                    break;
+                case SwitchModeEnum.MinionPlayer:
+                    if (altar.TopSelection.Target == AffectedTarget.Minions || altar.TopSelection.Target == AffectedTarget.Player)
+                    {
+                        topOptionWeight += altar.TopSelection.UpsideWeight - altar.TopSelection.DownsideWeight;
+                    }
+                    if (altar.BottomSelection.Target == AffectedTarget.Minions || altar.BottomSelection.Target == AffectedTarget.Player)
+                    {
+                        bottomOptionWeight += altar.BottomSelection.UpsideWeight - altar.BottomSelection.DownsideWeight;
+                    }
+                    break;
+                case SwitchModeEnum.BossPlayer:
+                    if (altar.TopSelection.Target == AffectedTarget.FinalBoss || altar.TopSelection.Target == AffectedTarget.Player)
+                    {
+                        topOptionWeight += altar.TopSelection.UpsideWeight - altar.TopSelection.DownsideWeight;
+                    }
+                    if (altar.BottomSelection.Target == AffectedTarget.FinalBoss || altar.BottomSelection.Target == AffectedTarget.Player)
+                    {
+                        bottomOptionWeight += altar.BottomSelection.UpsideWeight - altar.BottomSelection.DownsideWeight;
+                    }
+                    break;
+            }
+            if (Settings.AltarSettings.WeightSettings.EnableExtraWeight)
+            {
+                switch (altar.TopSelection.Target)
+                {
+                    case AffectedTarget.Minions:
+                        topOptionWeight += Settings.AltarSettings.WeightSettings.ExtraMinionWeight.Value;
+                        break;
+                    case AffectedTarget.Player:
+                        topOptionWeight += Settings.AltarSettings.WeightSettings.ExtraPlayerWeight.Value;
+                        break;
+                    case AffectedTarget.FinalBoss:
+                        topOptionWeight += Settings.AltarSettings.WeightSettings.ExtraBossWeight.Value;
+                        break;
+                }
+                switch (altar.BottomSelection.Target)
+                {
+                    case AffectedTarget.Minions:
+                        bottomOptionWeight += Settings.AltarSettings.WeightSettings.ExtraMinionWeight.Value;
+                        break;
+                    case AffectedTarget.Player:
+                        bottomOptionWeight += Settings.AltarSettings.WeightSettings.ExtraPlayerWeight.Value;
+                        break;
+                    case AffectedTarget.FinalBoss:
+                        bottomOptionWeight += Settings.AltarSettings.WeightSettings.ExtraBossWeight.Value;
                         break;
                 }
             }
 
-            if (!CanRun()) return null;
-
-            CompareWeights();
-
-            return null;
-        }
-
-        private void CompareWeights()
-        {
-            //filter visible labels and work only on the actual altar ones
-            var Altars = LabelCache.Value;
-            if (Altars.Count <= 0) return;
-            //complicated looking weight logic starts here....
-            foreach (var altarlabel in Altars)
+            #region debug
+            if (Settings.DebugSettings.DebugWeight)
             {
-                var topOptionLabel = altarlabel.Label.GetChildAtIndex(0);
-                var bottomOptionLabel = altarlabel.Label.GetChildAtIndex(1);
-                string? topOptionText = topOptionLabel.GetChildAtIndex(1)?.GetText(512);
-                string? bottomOptionText = bottomOptionLabel.GetChildAtIndex(1)?.GetText(512);
+                altar.TopTextDrawing = new TextDrawingSetup(
+                    new Vector2(altar.TopOptionLabel.GetClientRectCache.Center.X - 10, altar.TopOptionLabel.GetClientRectCache.Top - 25),
+                    Color.Cyan,
+                    topOptionWeight.ToString());
 
-                if (Settings.DebugSettings.DebugRawText == true) DebugWindow.LogError($"AltarBottom Length 512 : {bottomOptionText}");
-                if (Settings.DebugSettings.DebugRawText == true) DebugWindow.LogError($"AltarTop Length 512 : {topOptionText}");
-                if (topOptionText == null || bottomOptionText == null) continue;
-
-                Altar altar = new(GetSelectionData(topOptionText), GetSelectionData(bottomOptionText));
-                if (altar == null) continue;
-
-                if (altar.Top.UpsideWeight == 0 &&
-                    altar.Bottom.UpsideWeight == 0 &&
-                    altar.Top.DownsideWeight == 0 &&
-                    altar.Bottom.DownsideWeight == 0) continue;
-
-                int topOptionWeight = 0;
-                int bottomOptionWeight = 0;
-
-                if (Settings.AltarSettings.SwitchMode.Value == 2)
+                altar.BottomTextDrawing = new TextDrawingSetup(
+                    new Vector2(altar.BottomOptionLabel.GetClientRectCache.Center.X - 10, altar.BottomOptionLabel.GetClientRectCache.Top - 25),
+                    Color.Cyan,
+                    bottomOptionWeight.ToString());
+            }
+            #endregion
+            RectangleDrawingSetup topRectangleDrawing = null;
+            RectangleDrawingSetup bottomRectangleDrawing = null;
+            if (topOptionWeight < 0)
+            {
+                topRectangleDrawing = new RectangleDrawingSetup(altar.TopOptionLabel, Settings.AltarSettings.ColorSettings.BadColor, Settings.AltarSettings.FrameThickness);
+            }
+            if (bottomOptionWeight < 0)
+            {
+                bottomRectangleDrawing = new RectangleDrawingSetup(altar.BottomOptionLabel, Settings.AltarSettings.ColorSettings.BadColor, Settings.AltarSettings.FrameThickness);
+            }
+            if (topOptionWeight >= bottomOptionWeight && topOptionWeight > 0)
+            {
+                topRectangleDrawing = new RectangleDrawingSetup(altar.TopOptionLabel, GetColor(altar.TopSelection.Target), Settings.AltarSettings.FrameThickness.Value);
+            }
+            if (bottomOptionWeight > topOptionWeight && bottomOptionWeight > 0)
+            {
+                bottomRectangleDrawing = new RectangleDrawingSetup(altar.BottomOptionLabel, GetColor(altar.BottomSelection.Target), Settings.AltarSettings.FrameThickness);
+            }
+            altar.TopRectangleDrawing = topRectangleDrawing;
+            altar.BottomRectangleDrawing = bottomRectangleDrawing;
+        }
+        private void CleanCalculatedAltarsDictionary()
+        {
+            List<uint> removableAltars = new();
+            //find inactive altars and remove them from the dictionary
+            foreach (var altarID in CalculatedAltarDict.Keys)
+            {
+                try
                 {
-                    if (altar.Top.Target == AffectedTarget.Minions || altar.Top.Target == AffectedTarget.Player)
+                    CalculatedAltarDict.TryGetValue(altarID, out Altar altar);
+                    if (altar == null)
                     {
-                        topOptionWeight += altar.Top.UpsideWeight - altar.Top.DownsideWeight;
+                        removableAltars.Add(altarID);
+                        continue;
                     }
-                    if (altar.Bottom.Target == AffectedTarget.Minions || altar.Bottom.Target == AffectedTarget.Player)
+                    altar.EntityReference.TryGetComponent(out StateMachine stateMachineComp);
+                    if (stateMachineComp == null)
                     {
-                        bottomOptionWeight += altar.Bottom.UpsideWeight - altar.Bottom.DownsideWeight;
+                        removableAltars.Add(altarID);
+                        continue;
                     }
-                }
-                else if (Settings.AltarSettings.SwitchMode.Value == 3)
-                {
-                    if (altar.Top.Target == AffectedTarget.FinalBoss || altar.Top.Target == AffectedTarget.Player)
+                    const int activated = 0;
+                    if (stateMachineComp.States[activated].Value == 1)
                     {
-                        topOptionWeight += altar.Top.UpsideWeight - altar.Top.DownsideWeight;
-                    }
-                    if (altar.Bottom.Target == AffectedTarget.FinalBoss || altar.Bottom.Target == AffectedTarget.Player)
-                    {
-                        bottomOptionWeight += altar.Bottom.UpsideWeight - altar.Bottom.DownsideWeight;
+                        removableAltars.Add(altarID);
                     }
                 }
-                else
+                catch (Exception)
                 {
-                    topOptionWeight += altar.Top.UpsideWeight - altar.Top.DownsideWeight;
-                    bottomOptionWeight += altar.Bottom.UpsideWeight - altar.Bottom.DownsideWeight;
+                    removableAltars.Add(altarID);
                 }
-
-                if (altar.Top.Target == AffectedTarget.Minions) topOptionWeight += Settings.AltarSettings.MinionWeight.Value;
-                if (altar.Top.Target == AffectedTarget.FinalBoss) topOptionWeight += Settings.AltarSettings.BossWeight.Value;
-                if (altar.Bottom.Target == AffectedTarget.Minions) bottomOptionWeight += Settings.AltarSettings.MinionWeight.Value;
-                if (altar.Bottom.Target == AffectedTarget.FinalBoss) bottomOptionWeight += Settings.AltarSettings.BossWeight.Value;
-
-                if (Settings.DebugSettings.DebugWeight)
-                {
-                    TextDrawingList.Add(new(topOptionWeight.ToString(), new Vector2(topOptionLabel.GetClientRectCache.Center.X - 10, topOptionLabel.GetClientRectCache.Top - 25), Color.Cyan));
-                    TextDrawingList.Add(new(bottomOptionWeight.ToString(), new Vector2(bottomOptionLabel.GetClientRectCache.Center.X - 10, bottomOptionLabel.GetClientRectCache.Bottom + 15), Color.Cyan));
-                    //  DebugWindow.LogError($"UpperWeight: {UpperWeight} | DownerWeight: {DownerWeight}");
-                }
-
-                if (topOptionWeight < 0 || bottomOptionWeight < 0)
-                {
-                    if (topOptionWeight < 0) RectangleDrawingList.Add(new(topOptionLabel.GetClientRectCache, Settings.AltarSettings.BadColor, Settings.AltarSettings.FrameThickness));
-                    if (bottomOptionWeight < 0) RectangleDrawingList.Add(new(bottomOptionLabel.GetClientRectCache, Settings.AltarSettings.BadColor, Settings.AltarSettings.FrameThickness));
-                }
-
-                if (topOptionWeight >= 0 || bottomOptionWeight >= 0)
-                {
-                    if (topOptionWeight >= bottomOptionWeight && topOptionWeight > 0) RectangleDrawingList.Add(new(topOptionLabel.GetClientRectCache, GetColor(altar.Top.Target), Settings.AltarSettings.FrameThickness));
-                    if (bottomOptionWeight > topOptionWeight && bottomOptionWeight > 0) RectangleDrawingList.Add(new(bottomOptionLabel.GetClientRectCache, GetColor(altar.Bottom.Target), Settings.AltarSettings.FrameThickness));
-                    continue;
-                }
+            }
+            foreach (var id in removableAltars)
+            {
+                CalculatedAltarDict.Remove(id);
             }
         }
 
@@ -235,14 +361,12 @@ namespace AltarHelper
                 return false;
             return true;
         }
-        #endregion
-
         public Color GetColor(AffectedTarget choice)
         {
             Color color = Color.Transparent;
-            if (choice == AffectedTarget.Minions) return Settings.AltarSettings.MinionColor;
-            if (choice == AffectedTarget.FinalBoss) return Settings.AltarSettings.BossColor;
-            if (choice == AffectedTarget.Player) return Settings.AltarSettings.PlayerColor;
+            if (choice == AffectedTarget.Minions) return Settings.AltarSettings.ColorSettings.MinionColor;
+            if (choice == AffectedTarget.FinalBoss) return Settings.AltarSettings.ColorSettings.BossColor;
+            if (choice == AffectedTarget.Player) return Settings.AltarSettings.ColorSettings.PlayerColor;
 
             return color;
         }
@@ -286,12 +410,6 @@ namespace AltarHelper
                     downsides.Add(line);
                 }
             }
-            //if (Settings.DebugSettings.DebugRawText)
-            //{
-            //    DebugWindow.LogMsg($"Target: {Target}");
-            //    DebugWindow.LogMsg($"Downsides:\n{string.Join('\n', downsides)}");
-            //    DebugWindow.LogMsg($"Upsides:\n{string.Join('\n', upsides)}");
-            //}
 
             List<FilterEntry> UpsideFilterEntryMatches = new();
             List<FilterEntry> DownsideFilterEntryMatches = new();
@@ -305,7 +423,7 @@ namespace AltarHelper
                 if (filterentry == null) continue;
 
                 UpsideFilterEntryMatches.Add(filterentry);
-                if (Settings.DebugSettings.DebugBuffs) DebugWindow.LogMsg($"Bad Mod: {filterentry.Mod}  | Weight {filterentry.Weight}");
+                if (Settings.DebugSettings.DebugBuffs) DebugWindow.LogMsg($"Good Mod: {filterentry.Mod}  | Weight {filterentry.Weight}");
             }
 
             foreach (string entry in downsides)
@@ -332,36 +450,13 @@ namespace AltarHelper
 
             return selection;
         }
+        #endregion
 
-        public class FilterEntry
+        public enum SwitchModeEnum
         {
-            public string Mod { get; set; }
-            public int Weight { get; set; }
-            public AffectedTarget Target { get; set; }
-            public bool IsUpside { get; set; }
-        }
-
-
-        public class Altar
-        {
-            public Selection Top { get; set; }
-            public Selection Bottom { get; set; }
-            public Altar(Selection top, Selection bottom)
-            {
-                Top = top;
-                Bottom = bottom;
-            }
-        }
-
-        public class Selection
-        {
-            public AffectedTarget Target { get; set; }
-            public List<string> Downsides { get; set; }
-            public List<string> Upsides { get; set; }
-            public int UpsideWeight { get; set; }
-            public int DownsideWeight { get; set; }
-            public bool BuffGood { get; set; }
-            public bool DebuffGood { get; set; }
+            Filter = 1,
+            MinionPlayer = 2,
+            BossPlayer = 3
         }
     }
 }
