@@ -3,6 +3,7 @@ using ExileCore;
 using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.Elements;
+using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Cache;
 using SharpDX;
 using System;
@@ -17,15 +18,16 @@ namespace AltarHelper
     {
         private const string FILTER_FILE = "Filter.txt";
         private List<FilterEntry> FilterList = new();
-        private TimeCache<List<LabelOnGround>> LabelCache { get; set; }
+        private FrameCache<List<LabelOnGround>> LabelCache { get; set; }
         private Dictionary<uint, Altar> CalculatedAltarDict { get; set; } = new Dictionary<uint, Altar>();
+        private const int _AltarActivated = 0;
 
         public override bool Initialise()
         {
             Name = "AltarHelper";
             Settings.AltarSettings.RefreshFile.OnPressed += ReadFilterFile;
             ReadFilterFile();
-            LabelCache = new TimeCache<List<LabelOnGround>>(UpdateAltarLabelList, 500);
+            LabelCache = new FramesCache<List<LabelOnGround>>(UpdateAltarLabelList);
             return true;
         }
         private List<LabelOnGround> UpdateAltarLabelList() => GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Count == 0 ? new List<LabelOnGround>() :
@@ -210,8 +212,6 @@ namespace AltarHelper
                 Altar altar = new(GetSelectionData(topOptionText), GetSelectionData(bottomOptionText), altarlabel.ItemOnGround, topOptionLabel, bottomOptionLabel);
                 SetAltarDrawings(altar);
                 CalculatedAltarDict.Add(altarlabel.ItemOnGround.Id, altar);
-
-
             }
         }
         private void SetAltarDrawings(Altar altar)
@@ -333,8 +333,7 @@ namespace AltarHelper
                         removableAltars.Add(altarID);
                         continue;
                     }
-                    const int activated = 0;
-                    if (stateMachineComp.States[activated].Value == 1)
+                    if (stateMachineComp.States[_AltarActivated].Value == 1)
                     {
                         removableAltars.Add(altarID);
                     }
@@ -349,7 +348,16 @@ namespace AltarHelper
                 CalculatedAltarDict.Remove(id);
             }
         }
-
+        public override void EntityAdded(Entity entity)
+        {
+            if (Settings.SoundSettings.Sound.Value &&
+                entity.Metadata == "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar" &&
+                entity.TryGetComponent(out StateMachine stateMachineComp) &&
+                stateMachineComp.States[_AltarActivated].Value == 0)
+            {
+                GameController.SoundController.PlaySound("attention");
+            }
+        }
         #region helperfunctons
         public bool CanRun()
         {

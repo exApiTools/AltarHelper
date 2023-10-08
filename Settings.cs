@@ -11,9 +11,17 @@ namespace AltarHelper
     {
 
         public ToggleNode Enable { get; set; } = new ToggleNode(false);
+        public SoundSettings SoundSettings { get; set; } = new SoundSettings();
         public AltarSettings AltarSettings { get; set; } = new AltarSettings();
         public DebugSettings DebugSettings { get; set; } = new DebugSettings();
 
+    }
+    [Submenu]
+    public class SoundSettings
+    {
+        public ToggleNode Sound { get; set; } = new ToggleNode(false);
+        [Menu("not implemented")]
+        public FileNode AnyAltarSound { get; set; } = new FileNode("./../Sounds/");
     }
     [Submenu]
     public class AltarSettings
