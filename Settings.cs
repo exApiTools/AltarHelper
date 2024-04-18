@@ -1,82 +1,160 @@
 ﻿using ExileCore.Shared.Attributes;
 using ExileCore.Shared.Interfaces;
 using ExileCore.Shared.Nodes;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Windows.Forms;
-namespace AltarHelper
+using System.Linq;
+using System.Runtime.CompilerServices;
+using ExileCore;
+using ImGuiNET;
+using Newtonsoft.Json;
+using SharpDX;
+
+namespace AltarHelper;
+
+[Submenu]
+public class ModList
 {
+    [JsonIgnore] public bool Updated = true;
 
-    public class Settings : ISettings
+    public ModList()
     {
-
-        public ToggleNode Enable { get; set; } = new ToggleNode(false);
-        public SoundSettings SoundSettings { get; set; } = new SoundSettings();
-        public AltarSettings AltarSettings { get; set; } = new AltarSettings();
-        public DebugSettings DebugSettings { get; set; } = new DebugSettings();
-
-    }
-    [Submenu]
-    public class SoundSettings
-    {
-        public ToggleNode Sound { get; set; } = new ToggleNode(false);
-        [Menu("not implemented")]
-        public FileNode AnyAltarSound { get; set; } = new FileNode("./../Sounds/");
-    }
-    [Submenu]
-    public class AltarSettings
-    {
-        public ButtonNode RefreshFile { get; set; } = new ButtonNode();
-        public RangeNode<int> FrameThickness { get; set; } = new RangeNode<int>(2, 1, 5);
-        public ColorSettings ColorSettings { get; set; } = new ColorSettings();
-        [Menu("Switch Mode", "0 = Filter | 1 =  Only Minions and Player | 2 = Only Boss and Players ")]
-        public RangeNode<int> SwitchMode { get; set; } = new RangeNode<int>(1, 1, 3); // Any | Only Minions and Player | Only Boss and Player
-        //public ListNode Mode { get; set; } = new ListNode { Values = new List<string> { Enum.GetValues(typeof(DecisionEnum)).GetValue(0).GetDescription, DecisionMode.MinionPlayer.ToString(), DecisionMode.BossPlayer.ToString() } };
-        public WeightSettings WeightSettings { get; set; } = new WeightSettings();
-        public HotkeyNode HotkeyMode { get; set; } = new HotkeyNode(Keys.F7);
-    }
-    [Submenu]
-    public class WeightSettings
-    {
-        public ToggleNode EnableExtraWeight { get; set; } = new ToggleNode(false);
-        [Menu("Extra Minion Weight", "Add this value to minions mod Type")]
-        public RangeNode<int> ExtraMinionWeight { get; set; } = new RangeNode<int>(0, 0, 100);
-        [Menu("Extra Boss Weight", "Add this value to boss mod Type")]
-        public RangeNode<int> ExtraBossWeight { get; set; } = new RangeNode<int>(0, 0, 100);
-        [Menu("Extra Player Weight", "Add this value to player mod Type")]
-        public RangeNode<int> ExtraPlayerWeight { get; set; } = new RangeNode<int>(0, 0, 100);
-    }
-    [Submenu]
-    public class ColorSettings
-    {
-        public ColorNode MinionColor { get; set; } = new ColorNode(SharpDX.Color.LightGreen);
-        public ColorNode PlayerColor { get; set; } = new ColorNode(SharpDX.Color.LightCyan);
-        public ColorNode BossColor { get; set; } = new ColorNode(SharpDX.Color.LightBlue);
-        public ColorNode BadColor { get; set; } = new ColorNode(SharpDX.Color.Red);
-    }
-    [Submenu]
-    public class FilterList
-    {
-        public ListNode DecisionMode { get; set; } = new ListNode { Values = new List<string> { "Filter", "Only Minions and Player", "Only Boss and Players" } };
+        Mods = new ContentNode<Mod>
+        {
+            ItemFactory = () => new Mod() { List = this },
+            EnableItemCollapsing = false,
+            OnRemove = _ => Updated = true,
+        };
+        DragMe = new DragNode(this);
     }
 
-    [Submenu]
-    public class DebugSettings
-    {
-        public ToggleNode DebugRawText { get; set; } = new ToggleNode(false);
-        public ToggleNode DebugBuffs { get; set; } = new ToggleNode(false);
-        public ToggleNode DebugDebuffs { get; set; } = new ToggleNode(false);
-        public ToggleNode DebugWeight { get; set; } = new ToggleNode(false);
+    [ConditionalDisplay(nameof(PrepareMods))]
+    public ContentNode<Mod> Mods { get; set; }
 
-    }
-    public enum DecisionEnum
+    [JsonIgnore]
+    public DragNode DragMe { get; set; }
+
+    public bool PrepareMods()
     {
-        [Description("Filter")]
-        Filter = 0,
-        [Description("Only Minions and Player")]
-        MinionPlayer = 1,
-        [Description("Only Boss and Players")]
-        BossPlayer = 2,
+        foreach (var mod in Mods.Content)
+        {
+            mod.List = this;
+        }
+
+        return true;
+    }
+}
+
+[Submenu]
+public class Mod
+{
+    [JsonIgnore] public ModList List;
+    [JsonIgnore] public bool Updated = true;
+
+    public Mod()
+    {
+        MatchingMod = new ListNode() { Value = "", OnValueSelected = s => Updated = true };
+        DragMe = new DragNode(this);
     }
 
+    [JsonIgnore]
+    public DragNode DragMe { get; set; }
+
+    [ConditionalDisplay(nameof(PrepareMatchingMod))]
+    public ListNode MatchingMod { get; set; }
+
+    public bool PrepareMatchingMod()
+    {
+        if (AltarHelperCore.Instance.ModTexts is null or { Count: 0 })
+        {
+            ImGui.Text("Enable the plugin first or reload the area to configure this");
+            return false;
+        }
+
+        MatchingMod.Values = AltarHelperCore.Instance.ModTexts;
+        return true;
+    }
+}
+
+[Submenu(RenderMethod = nameof(Render))]
+public class DragNode
+{
+    private readonly ModList _modList;
+    private static int I = 0;
+    private readonly Mod _mod;
+    private readonly int _i = I++;
+    private static readonly ConditionalWeakTable<DragNode, object> DragNodes = [];
+
+    public DragNode(Mod mod)
+    {
+        DragNodes.Add(this, _i);
+        _mod = mod;
+    }
+
+    public DragNode(ModList modList)
+    {
+        _modList = modList;
+        DragNodes.Add(this, _i);
+    }
+
+    public void Render()
+    {
+        var dropTargetStart = ImGui.GetCursorPos();
+        ImGui.PushStyleColor(ImGuiCol.Button, 0);
+        ImGui.Button(_mod == null ? "Drag on me" : "Drag me");
+        ImGui.PopStyleColor();
+        if (_mod != null && ImGui.BeginDragDropSource())
+        {
+            ImGuiHelpers.SetDragDropPayload("AltarHelperDragNodeIndex", _i);
+            ImGui.Text("...");
+            ImGui.EndDragDropSource();
+        }
+
+        if (ImGuiHelpers.DrawAllColumnsBox("##dropBox", dropTargetStart) && ImGui.BeginDragDropTarget())
+        {
+            var sourceId = ImGuiHelpers.AcceptDragDropPayload<int>("AltarHelperDragNodeIndex");
+            if (sourceId != null)
+            {
+                if (ImGui.IsMouseReleased(ImGuiMouseButton.Left))
+                {
+                    var source = DragNodes.FirstOrDefault(x => (int)x.Value == sourceId).Key;
+                    if (source != null)
+                    {
+                        source._mod.List.Mods.Content.Remove(source._mod);
+                        var targetList = (_mod?.List ?? _modList).Mods.Content;
+                        var index = targetList.IndexOf(_mod);
+                        source._mod.Updated = true;
+                        targetList.Insert(index == -1 ? targetList.Count : index, source._mod);
+                    }
+                }
+            }
+
+            ImGui.EndDragDropTarget();
+        }
+    }
+}
+
+public class Settings : ISettings
+{
+    public ToggleNode Enable { get; set; } = new ToggleNode(false);
+    public DisplaySettings DisplaySettings { get; set; } = new DisplaySettings();
+    public DebugSettings DebugSettings { get; set; } = new DebugSettings();
+
+    public ModList BisList { get; set; } = new ModList();
+    public ModList BrickList { get; set; } = new ModList();
+    public ModList OtherList { get; set; } = new ModList();
+}
+
+[Submenu]
+public class DisplaySettings
+{
+    public RangeNode<int> FrameThickness { get; set; } = new RangeNode<int>(2, 1, 5);
+    public ColorNode BisColor { get; set; } = new(Color.Violet);
+    public ColorNode BrickColor { get; set; } = new(Color.Red);
+    public ColorNode PickColor { get; set; } = new(Color.LightGreen);
+    public ColorNode NuisanceColor { get; set; } = new(Color.Yellow);
+}
+
+[Submenu]
+public class DebugSettings
+{
+    public ToggleNode DebugRawText { get; set; } = new ToggleNode(false);
 }
