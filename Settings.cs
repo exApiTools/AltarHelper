@@ -138,9 +138,9 @@ public class Settings : ISettings
     public DisplaySettings DisplaySettings { get; set; } = new DisplaySettings();
     public DebugSettings DebugSettings { get; set; } = new DebugSettings();
 
-    public ModList BisList { get; set; } = new ModList();
-    public ModList BrickList { get; set; } = new ModList();
-    public ModList OtherList { get; set; } = new ModList();
+    public ModList MustPickMods { get; set; } = new ModList();
+    public ModList BrickMods { get; set; } = new ModList();
+    public ModList OtherMods { get; set; } = new ModList();
 }
 
 [Submenu]

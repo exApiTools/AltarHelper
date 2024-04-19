@@ -44,13 +44,14 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             _mods = GameController.Files.AtlasPrimordialAltarChoices.EntriesList.ToDictionary(x => x,
                 x =>
                 {
-                    var specificTranslation = GameController.Files.PrimordialAltarStatDescriptions.TranslateMod(x.Mod.StatNames.ToDictionary(s => s.MatchingStat, s => 0), 0);
+                    var stats = x.Mod.StatNames.Select(x => x.MatchingStat).ToList();
+                    var specificTranslation = GameController.Files.PrimordialAltarStatDescriptions.TranslateMod(stats, 0, s => "#");
                     if (specificTranslation.Contains('<'))
                     {
-                        specificTranslation = GameController.Files.StatDescriptions.TranslateMod(x.Mod.StatNames.ToDictionary(s => s.MatchingStat, s => 0), 0);
+                        specificTranslation = GameController.Files.StatDescriptions.TranslateMod(stats, 0, s => "#");
                     }
 
-                    return $"[{x.Type.Id}] {specificTranslation}";
+                    return $"[{x.Type.Id switch { "InfluencedMonsters" => "Monsters", var s => s }}] {specificTranslation}";
                 });
             _reverseMods = _mods.ToLookup(x => x.Value, x => x.Key);
             ModTexts = _reverseMods.Select(x => x.Key).Order().ToList();
@@ -61,16 +62,16 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
 
     public override Job Tick()
     {
-        var modLists = new[] { Settings.BisList, Settings.BrickList, Settings.OtherList, };
+        var modLists = new[] { Settings.MustPickMods, Settings.BrickMods, Settings.OtherMods, };
         var updatedItems = modLists.SelectMany(x => x.Mods.Content).Where(x => x.Updated).ToList();
         var updatedLists = modLists.Where(x => x.Updated).ToList();
         if (updatedItems.Any() || updatedLists.Any() || _computedModRanking == null)
         {
             _computedModRanking = new[]
             {
-                (List: Settings.BisList, Type: ModRankType.Bis),
-                (List: Settings.BrickList, Type: ModRankType.Brick),
-                (List: Settings.OtherList, Type: ModRankType.Normal),
+                (List: Settings.MustPickMods, Type: ModRankType.Bis),
+                (List: Settings.BrickMods, Type: ModRankType.Brick),
+                (List: Settings.OtherMods, Type: ModRankType.Normal),
             }.SelectMany(l => l.List.Mods.Content.SelectMany((m, i) =>
                 _reverseMods[m.MatchingMod.Value] switch
                 {
