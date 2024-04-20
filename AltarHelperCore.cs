@@ -38,7 +38,6 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
         {
             return GameController.EntityListWrapper.OnlyValidEntities.Any(x =>
                 x.Metadata is tangleAltar or fireAltar && x.TryGetComponent<StateMachine>(out var stateComp) 
-                                                       && stateComp != null
                                                        && stateComp.States.Any(state => state.Name == "activated" && state.Value != 1))
                 ? GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Where(label => label.ItemOnGround.Metadata is tangleAltar or fireAltar).ToList()
                 : [];
