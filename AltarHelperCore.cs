@@ -21,6 +21,8 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
     internal List<string> ModTexts;
     private Dictionary<string, (ModRankType Type, int Rank, bool IsDownside)?> _computedModRanking;
     public static AltarHelperCore Instance;
+    private const string tangleAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar";
+    private const string fireAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/CleansingFireAltar";
 
     private enum ModRankType
     {
@@ -32,9 +34,14 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
     public AltarHelperCore()
     {
         Instance = this;
-        _labelCache = new FramesCache<List<LabelOnGround>>(() => GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Where(x =>
-            x.ItemOnGround.Metadata == "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar" ||
-            x.ItemOnGround.Metadata == "Metadata/MiscellaneousObjects/PrimordialBosses/CleansingFireAltar").ToList());
+        _labelCache = new FramesCache<List<LabelOnGround>>(() =>
+        {
+            return GameController.EntityListWrapper.OnlyValidEntities.Any(x =>
+                x.Metadata is tangleAltar or fireAltar && x.TryGetComponent<StateMachine>(out var stateComp) 
+                                                       && stateComp.States.Any(state => state.Name == "activated" && state.Value != 1))
+                ? GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Where(label => label.ItemOnGround.Metadata is tangleAltar or fireAltar).ToList()
+                : [];
+        });
     }
 
     public override void AreaChange(AreaInstance area)
