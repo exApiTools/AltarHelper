@@ -61,6 +61,8 @@ public class Mod
     [ConditionalDisplay(nameof(PrepareMatchingMod))]
     public ListNode MatchingMod { get; set; }
 
+    public TextNode Sound { get; set; } = new TextNode("");
+
     public bool PrepareMatchingMod()
     {
         if (AltarHelperCore.Instance.ModTexts is null or { Count: 0 })

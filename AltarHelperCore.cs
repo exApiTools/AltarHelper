@@ -6,6 +6,7 @@ using ExileCore.Shared.Cache;
 using SharpDX;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using ExileCore.PoEMemory.FilesInMemory;
 
@@ -19,10 +20,11 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
     private Dictionary<AtlasPrimordialAltarChoice, string> _mods;
     private ILookup<string, AtlasPrimordialAltarChoice> _reverseMods;
     internal List<string> ModTexts;
-    private Dictionary<string, (ModRankType Type, int Rank, bool IsDownside)?> _computedModRanking;
+    private Dictionary<string, (ModRankType Type, int Rank, bool IsDownside, string Sound)?> _computedModRanking;
     public static AltarHelperCore Instance;
-    private const string tangleAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar";
-    private const string fireAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/CleansingFireAltar";
+    private const string TangleAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/TangleAltar";
+    private const string FireAltar = "Metadata/MiscellaneousObjects/PrimordialBosses/CleansingFireAltar";
+    private readonly Dictionary<uint, bool> _soundPlayedTracker = new Dictionary<uint, bool>();
 
     private enum ModRankType
     {
@@ -37,15 +39,17 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
         _labelCache = new FramesCache<List<LabelOnGround>>(() =>
         {
             return GameController.EntityListWrapper.OnlyValidEntities.Any(x =>
-                x.Metadata is tangleAltar or fireAltar && x.TryGetComponent<StateMachine>(out var stateComp) 
+                x.Metadata is TangleAltar or FireAltar && x.TryGetComponent<StateMachine>(out var stateComp)
                                                        && stateComp.States.Any(state => state.Name == "activated" && state.Value != 1))
-                ? GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Where(label => label.ItemOnGround.Metadata is tangleAltar or fireAltar).ToList()
+                ? GameController.IngameState.IngameUi.ItemsOnGroundLabelsVisible.Where(label => label.ItemOnGround.Metadata is TangleAltar or FireAltar).ToList()
                 : [];
         });
     }
 
     public override void AreaChange(AreaInstance area)
     {
+        _soundPlayedTracker.Clear();
+
         if (_mods == null || !_mods.Any() || _mods.Any(x => x.Value.Contains('<')))
         {
             _mods = GameController.Files.AtlasPrimordialAltarChoices.EntriesList.ToDictionary(x => x,
@@ -82,9 +86,10 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             }.SelectMany(l => l.List.Mods.Content.SelectMany((m, i) =>
                 _reverseMods[m.MatchingMod.Value] switch
                 {
-                    var v when !v.Any() => LogEmpty<(string, ModRankType, int, bool)>(m.MatchingMod.Value),
-                    var v => v.Select(am => (am.Mod.Key, l.Type, i, IsDownside: am.Mod.Key.Contains("Downside", StringComparison.Ordinal)))
-                })).ToDictionary(x => x.Key, x => ((ModRankType, int, bool)?)(x.Type, x.i, x.IsDownside));
+                    var v when !v.Any() => LogEmpty<(string, ModRankType, int, bool, string)>(m.MatchingMod.Value),
+                    var v => v.Select(am => (am.Mod.Key, l.Type, i, IsDownside: am.Mod.Key.Contains("Downside", StringComparison.Ordinal),
+                        Sound: string.IsNullOrWhiteSpace(m.Sound.Value) ? null : m.Sound.Value))
+                })).ToDictionary(x => x.Key, x => ((ModRankType, int, bool, string)?)(x.Type, x.i, x.IsDownside, x.Sound));
 
             foreach (var updatedItem in updatedItems)
             {
@@ -97,6 +102,7 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             }
 
             _altarCache.Clear();
+            _soundPlayedTracker.Clear();
         }
 
         CleanCalculatedAltarsDictionary();
@@ -147,7 +153,7 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
         return [];
     }
 
-    private (int? bisRank, bool brick, int? pickRank, int? nuisanceRank) ParseModList(IReadOnlyCollection<string> mods)
+    private (int? bisRank, bool brick, int? pickRank, int? nuisanceRank, HashSet<string> sound) ParseModList(IReadOnlyCollection<string> mods)
     {
         if (_computedModRanking == null)
         {
@@ -155,7 +161,7 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             return default;
         }
 
-        var aggregate = mods.Aggregate<string, (int? bisRank, bool brick, int? pickRank, int? nuisanceRank)>((null, false, null, null), (a, mod) =>
+        var aggregate = mods.Aggregate<string, (int? bisRank, bool brick, int? pickRank, int? nuisanceRank, HashSet<string> sound)>((null, false, null, null, null), (a, mod) =>
         {
             var modRanking = _computedModRanking.GetValueOrDefault(mod);
             if (modRanking == null)
@@ -165,21 +171,24 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
 
             if (modRanking.Value.Type == ModRankType.Bis)
             {
-                return (Math.Min(a.bisRank ?? modRanking.Value.Rank, modRanking.Value.Rank), a.brick, null, null);
+                return (Math.Min(a.bisRank ?? modRanking.Value.Rank, modRanking.Value.Rank), a.brick, null, null,
+                    modRanking.Value.Sound == null ? a.sound : (a.sound ?? []).Union([modRanking.Value.Sound]).ToHashSet());
             }
 
             if (modRanking.Value.Type == ModRankType.Brick)
             {
-                return (a.bisRank, true, null, null);
+                return (a.bisRank, true, null, null, modRanking.Value.Sound == null ? a.sound : (a.sound ?? []).Union([modRanking.Value.Sound]).ToHashSet());
             }
 
             if (modRanking.Value.IsDownside)
             {
-                return (a.bisRank, a.brick, a.pickRank, Math.Min(a.nuisanceRank ?? modRanking.Value.Rank, modRanking.Value.Rank));
+                return (a.bisRank, a.brick, a.pickRank, Math.Min(a.nuisanceRank ?? modRanking.Value.Rank, modRanking.Value.Rank),
+                    modRanking.Value.Sound == null ? a.sound : (a.sound ?? []).Union([modRanking.Value.Sound]).ToHashSet());
             }
             else
             {
-                return (a.bisRank, a.brick, Math.Min(a.pickRank ?? modRanking.Value.Rank, modRanking.Value.Rank), a.nuisanceRank);
+                return (a.bisRank, a.brick, Math.Min(a.pickRank ?? modRanking.Value.Rank, modRanking.Value.Rank), a.nuisanceRank,
+                    modRanking.Value.Sound == null ? a.sound : (a.sound ?? []).Union([modRanking.Value.Sound]).ToHashSet());
             }
         });
 
@@ -255,6 +264,30 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
                 TopOptionLabel = topOptionLabel,
             };
             _altarCache[altarlabel.ItemOnGround.Id] = altar;
+            if (topRanking.sound?.Union(bottomRanking.sound ?? []).Where(x => x != null).ToList() is { Count: > 0 } sounds &&
+                _soundPlayedTracker.TryAdd(altarlabel.ItemOnGround.Id, true))
+            {
+                var dir = Path.Join(Core.Directory, "sounds");
+                if (!Directory.Exists(dir))
+                {
+                    DebugWindow.LogMsg("Sound directory is missing, unable to play a sound!");
+                }
+                else
+                {
+                    foreach (var sound in sounds)
+                    {
+                        var path = Path.Join(dir, sound);
+                        if (!File.Exists(path))
+                        {
+                            DebugWindow.LogError($"File {path} is missing, unable to play it");
+                        }
+                        else
+                        {
+                            GameController.SoundController.PlaySound(path);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -265,15 +298,18 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             try
             {
                 if (altar == null ||
+                    altar.Entity?.IsValid != true ||
                     !altar.Entity.TryGetComponent<StateMachine>(out var stateMachineComp) ||
                     stateMachineComp.States[_AltarActivated].Value == 1)
                 {
                     _altarCache.Remove(altarId);
+                    _soundPlayedTracker.Remove(altarId);
                 }
             }
             catch
             {
                 _altarCache.Remove(altarId);
+                _soundPlayedTracker.Remove(altarId);
             }
         }
     }
