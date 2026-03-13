@@ -232,12 +232,14 @@ public class AltarHelperCore : BaseSettingsPlugin<Settings>
             }
 
             var altarEntity = altarlabel.ItemOnGround.AsObject<AltarEntity>();
-            var topMods = new[] { altarEntity.TopUpside1, altarEntity.TopUpside2, altarEntity.TopDownside1, altarEntity.TopDownside2 }
-                .Where(x => x != null)
+            var topMods = ((List<AltarEntity.AltarMod>)[
+                    ..altarEntity.TopUpsides, 
+                    ..altarEntity.TopDownsides, ])
                 .Select(x => x.Mod.Key)
                 .ToList();
-            var bottomMods = new[] { altarEntity.BottomUpside1, altarEntity.BottomUpside2, altarEntity.BottomDownside1, altarEntity.BottomDownside2 }
-                .Where(x => x != null)
+            var bottomMods = ((List<AltarEntity.AltarMod>)[
+                    ..altarEntity.BottomUpsides,
+                    ..altarEntity.BottomDownsides, ])
                 .Select(x => x.Mod.Key)
                 .ToList();
 
